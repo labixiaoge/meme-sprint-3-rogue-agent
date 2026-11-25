@@ -17,7 +17,8 @@
 // in for /bot and /output:
 //   mkdir -p out && MAKEFUN_BOT_DIR=. MAKEFUN_OUTPUT_DIR=out node main.ts
 
-import { copyFileSync, mkdirSync, statSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
 const BOT_DIR = process.env.MAKEFUN_BOT_DIR ?? '/bot';
@@ -35,7 +36,30 @@ try {
 // a success. The gate reads /output/entry.png: a whole PNG, at most
 // 1,048,576 bytes and 1024 by 1024 pixels.
 const outPath = join(OUTPUT_DIR, 'entry.png');
-const outBytes = statSync(outPath).size;
+const srcPath = join(BOT_DIR, 'entry.png');
+const srcBytes = readFileSync(srcPath);
+const outBytesBuf = readFileSync(outPath);
+// The copy must be byte-identical to the source: any truncation or stray
+// write is caught here instead of reaching the gate.
+const digest = (buf: Buffer) => createHash('sha256').update(buf).digest('hex');
+if (digest(srcBytes) !== digest(outBytesBuf)) {
+  console.error('entry.png output does not match the source byte for byte');
+  process.exit(1);
+}
+// Validate the PNG itself: 8-byte signature, then the IHDR chunk must say
+// 1024 by 1024. A truncated or non-PNG file fails here, not at the gate.
+const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+if (outBytesBuf.length < 33 || !outBytesBuf.subarray(0, 8).equals(PNG_SIG)) {
+  console.error('entry.png is not a valid PNG (bad signature)');
+  process.exit(1);
+}
+const width = outBytesBuf.readUInt32BE(16);
+const height = outBytesBuf.readUInt32BE(20);
+if (width !== 1024 || height !== 1024) {
+  console.error(`entry.png is ${width}x${height}, expected 1024x1024`);
+  process.exit(1);
+}
+const outBytes = outBytesBuf.length;
 if (outBytes > 1048576) {
   console.error(`entry.png is ${outBytes} bytes, over the 1,048,576-byte gate cap`);
   process.exit(1);
